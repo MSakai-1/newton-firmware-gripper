@@ -18,15 +18,21 @@ Mode mode = Opening;
 unsigned long moveStartTime = 0;
 
 void readSerialCommand() {
-  if (Serial.available()) {  
-        while (Serial.available()) {  // たまったデータを読み捨てる
-            Serial.read();  
-        }
-        String received = Serial.readStringUntil('\n');  // 改行まで受信
-        received.trim();  // 空白や改行を削除
-
-        command = received.toInt();  // 文字列を整数に変換
+  unsigned long startTime = millis();
+  command = 0;
+  while (Serial.available()) {// たまったデータを読み捨てる
+      Serial.read();  
   }
+  //0.5秒間待機し、データが入ってきたら処理、なければ0を出力
+    while (millis() - startTime < 500) {
+        if (Serial.available()) {
+            String received = Serial.readStringUntil('\n'); // 改行まで受信
+            received.trim();// 空白や改行を削除
+            command = received.toInt();  //文字列を整数に変換
+            Serial.print("Received Command: "); Serial.println(command);
+            return;//処理が終わったらリターン
+        }
+    }
 }
 
 void wait_ms(unsigned long t)
