@@ -1,3 +1,14 @@
+/*
+Arduino(ATtiny84)用のもとのコードを、Teensy3.2用に変更
+主な変更点
+*割り込み処理を#include <util/atomic.h>	から　__disable_irq() / __enable_irq() を使う形に変更
+*pwm出力をTCCR1AからanalogWriteFrequency() + analogWrite()に変更
+*ADC 解像度 (1023)を　analogRead() / 1023.0f　から　analogReadResolution(12) を設定し、analogRead() / 4095.0f に変更
+analogReadResolution(12)は12ビットなので1023を4095に設定することに。
+*/
+
+
+
 /* Blue Robotics Newton Gripper Firmware
 -----------------------------------------------------
 
@@ -45,7 +56,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 -------------------------------*/
 
-#include <util/atomic.h>
+//#include <util/atomic.h>
+//#include <Arduino.h>  //必要かも
 #include <DiscreteFilter.h>  //フィルタ用ライブラリ、githubからインストール必要
 #include "Newton-Gripper.h"
 
@@ -77,12 +89,19 @@ void setup() {
   pinMode(OUT1,       OUTPUT);  //モータドライバ用制御ピン
   pinMode(OUT2,       OUTPUT);  //モータドライバ用制御ピン
   pinMode(VOLTAGE_IN, INPUT);
+  pinMode(OCL, INPUT_PULLUP);//追加
 
   // Initialize PWM input reader
-  initializePWMReader();
+  //initializePWMReader();
+  attachInterrupt(digitalPinToInterrupt(PWM_IN), pwmISR, CHANGE);//追加
 
   // Initialize PWM output generator
-  initializePWMOutput();
+  //initializePWMOutput();
+  // PWM出力設定 (Teensy用)
+  analogWriteFrequency(OUT1, 20000);  // PWM周波数20kHz
+  analogWriteFrequency(OUT2, 20000);
+  analogWrite(OUT1, 0);
+  analogWrite(OUT2, 0);
 
   // Initialize output low-pass filter（速度制御用のリードラグフィルタ）
   speedfilter.createLeadLagCompensator(FILTER_DT, TAUP_OUT, TAUN_OUT);
@@ -107,18 +126,18 @@ void loop() {
   // Save local version of pulsetime
   //割り込み中のpulsetimeを安全にコピー
   uint32_t tpulse;
-  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-    tpulse = pulsetime;
-  }  
+  __disable_irq();
+  tpulse = pulsetime;
+  __enable_irq();
 
   // Make sure we're still receiving PWM inputs
   //PWM信号が途切れた場合 (INPUT_TOUT 秒以上経過) にモータを停止
   if ( (millis() - tpulse)/1000.0f > INPUT_TOUT ) {
     // If it has been too long since the last input, shut off motor
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-      pulsein   = PWM_NEUTRAL;
-      pulsetime = millis();
-    }
+    __disable_irq();
+    pulsein   = PWM_NEUTRAL;
+    pulsetime = millis();
+    __enable_irq();
   } // end pwm input check
     
   //Set endstop condition if Motor Driver detects a fault 
@@ -178,9 +197,9 @@ void runSpeedFilter() {
   // Save pulsein locally
   //pwm入力を取得
   int16_t pulsewidth;
-  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-    pulsewidth = pulsein;
-  }
+  __disable_irq();
+  pulsewidth = pulsein;
+  __enable_irq();
 
   // Reject signals that are way off (i.e. const. 0 V, const. +5 V, noise)
   //pwmの範囲チェック、異常値でなければNEWTRAL値を引いてpwを計算し、速度を±1で計算
@@ -248,20 +267,20 @@ void setMotorOutput(dir_t direction, dir_t limit, float velocity) {
     //ATOMIC_BLOCK(ATOMIC_RESTORESTATE) を用いることで、割り込みの影響を受けずに OCR1A OCR1B を安全に設定
     //velocityの値にMAXのpwm幅をかけることでデューティー比を再現
   if ( direction == OPEN && limit != OPEN) {
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-      OCR1A = abs(velocity)*MAX_COUNT;
-      OCR1B = 0;
-    }
+    __disable_irq();
+    analogWrite(OUT1, abs(velocity) * 255);
+    analogWrite(OUT2, 0);
+    __enable_irq();
   } else if ( direction == CLOSE && limit != CLOSE) {
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-      OCR1A = 0;
-      OCR1B = abs(velocity)*MAX_COUNT;
-    }
+    __disable_irq();
+      analogWrite(OUT1, 0);
+      analogWrite(OUT2, abs(velocity) * 255);
+    __enable_irq();
   } else {
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-      OCR1A = BRAKE*MAX_COUNT;
-      OCR1B = BRAKE*MAX_COUNT;
-    }
+    __disable_irq();
+      analogWrite(OUT1, 0);
+      analogWrite(OUT2, 0);
+    __enable_irq();
   }
 }
 
@@ -272,9 +291,9 @@ void setMotorOutput(dir_t direction, dir_t limit, float velocity) {
  ******************************************************************************/
 float readCurrent() {
   // Reported voltage is 10x actual drop across the sense resistor
-  //電圧を測定し、V_IN / 1023.0f(5Vまたは3.3VのV_REF相当のAtoDデジタル値)で正規化
+  //電圧を測定し、V_IN / 4095.0f(5Vまたは3.3VのV_REF相当のAtoDデジタル値)で正規化
   //さらにモータドライバの電流検知による〈内蔵シャント抵抗による電圧降下、さらに10倍に増幅して出力する分を踏まえ10.0f*R_SENSEで割る
-  return (analogRead(CURRENT_IN)*V_IN)/(1023.0f*10.0f*R_SENSE);
+  return (analogRead(CURRENT_IN)*V_IN)/(4095.0f*10.0f*R_SENSE);
 }
 
 /******************************************************************************
@@ -284,7 +303,7 @@ float readCurrent() {
  ******************************************************************************/
 float readVoltage() {
   //電圧測定
-  return (analogRead(VOLTAGE_IN)*V_IN)/(1023.0f*V_SENSE_DIV);
+  return (analogRead(VOLTAGE_IN)*V_IN)/(4095.0f*V_SENSE_DIV);
 }
 
 /******************************************************************************
@@ -306,32 +325,13 @@ float stallCurrent(float voltage) {
 void initializePWMOutput() {
   // Stop interrupts while changing timer settings
   //PWM 出力を初期化する関数
-  cli();
-
-  TCCR1A = 0;
-  TCCR1B = 0;
-  TCCR1C = 0;
-
-  // Set non-inverting PWM Mode
-  bitSet(TCCR1A, COM1A1);
-  bitSet(TCCR1A, COM1B1);
-
-  // Set PWM. Phase & Freq. Correct (ICR1)
-  bitClear(TCCR1A, WGM10);  // WGM10: 0
-  bitClear(TCCR1A, WGM11);  // WGM11: 0
-  bitClear(TCCR1B, WGM12);  // WGM12: 0
-  bitSet  (TCCR1B, WGM13);  // WGM13: 1
-
-  // Set timer1 clock source to prescaler 1
-  bitSet  (TCCR1B, CS10);   // CS10: 1
-  bitClear(TCCR1B, CS11);   // CS11: 0
-  bitClear(TCCR1B, CS12);   // CS12: 0
-
-  // Set timer1 TOP (stored in ICR1)
-  ICR1 = MAX_COUNT;
-
-  // Done setting timers -> allow interrupts again
-  sei();
+  c__disable_irq();
+    analogWriteFrequency(OUT1, 20000);
+    analogWriteFrequency(OUT2, 20000);
+    analogWriteResolution(12);
+    analogWrite(OUT1, 0);
+    analogWrite(OUT2, 0);
+    __enable_irq();
 }
 
 
@@ -343,11 +343,7 @@ void initializePWMOutput() {
 void initializePWMReader() {
   // Enable INT0
   //PWM入力の割り込みを設定する関
-  bitSet(GIMSK, INT0);
-
-  // Set interrupt sense control to "any logical change"
-  bitSet  (MCUCR, ISC00);   // ISC00: 1
-  bitClear(MCUCR, ISC01);   // ISC01: 0
+  attachInterrupt(digitalPinToInterrupt(PWM_IN), pwmISR, CHANGE);
 }
 
 ////////////////////////////////
@@ -368,14 +364,14 @@ SIGNAL(INT0_vect) {
   //PWM信号の変化を検出する割り込みハンドラ
   if (digitalRead(PWM_IN)) {
     // Record start of input pulse
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-      inputpulsestart = micros();
-    }
+    __disable_irq();
+    inputpulsestart = micros();
+    __enable_irq();
   } else {
     // Measure width of input pulse
-    ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-      pulsein   = micros() - inputpulsestart;
-      pulsetime = millis();
-    }
+    __disable_irq();
+    pulsein = micros() - inputpulsestart;
+    pulsetime = millis();
+    __enable_irq();
   }
 }

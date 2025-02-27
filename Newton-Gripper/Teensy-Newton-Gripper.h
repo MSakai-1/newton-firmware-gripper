@@ -48,11 +48,11 @@ THE SOFTWARE.
 
 // HARDWARE PIN DEFINITIONS
 #define PWM_IN        8                 // INT0
-#define LED           4
+#define LED           13                //変更、オンボードLED
 #define CURRENT_IN    1                 // from A4955 AIOUT
 #define SLEEPN        3
-#define OUT1          6                 // OCR1A
-#define OUT2          5                 // OCR1B
+#define OUT1          6                 // 変更、PWM対応
+#define OUT2          5                 // 変更、PWM対応
 #define VOLTAGE_IN    0                 // from voltage divider
 #define OCL           2                 // OCP and OVP output flag, open drain
 
@@ -89,7 +89,7 @@ THE SOFTWARE.
 //PWM OUTPUT DEFINITIONS
 #define PRESCALE      1                 // must match TCCR1B settings
 #define CNT_PER_US    (F_CPU/PRESCALE/1000000L) // timer counts
-#define MAX_COUNT     0x0FFF            // sets output PWM freq. (~1 kHz)
+#define MAX_COUNT     255            // sets output PWM freq. (~1 kHz)
 
 // STALL PARAMETERS
 #define MOT_FS        1.50f             // Factor to guarantee that the ESC will shutoff Motor
